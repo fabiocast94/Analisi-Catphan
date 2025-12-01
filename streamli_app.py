@@ -5,6 +5,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 from fpdf import FPDF
 from pylinac import CatPhan600
+import tempfile
+import os
 
 # ---------------------------
 # Custom CTP401 Module
@@ -30,58 +32,59 @@ st.title('CatPhan 500 Analyzer (based on CatPhan600)')
 uploaded_files = st.file_uploader('Upload DICOM files (CatPhan 500)', type=['dcm','dicom'], accept_multiple_files=True)
 
 if uploaded_files:
-    dicom_paths = []
-    for f in uploaded_files:
-        with open(f.name, 'wb') as temp_file:
-            temp_file.write(f.read())
-            dicom_paths.append(f.name)
+    # Save uploaded files to a temporary folder
+    with tempfile.TemporaryDirectory() as tmpdirname:
+        for f in uploaded_files:
+            path = os.path.join(tmpdirname, f.name)
+            with open(path, 'wb') as out:
+                out.write(f.read())
 
-    st.info('Creating CatPhan600 object...')
-    cp = CatPhan600(dicom_paths)
-    cp.analyze()
+        st.info('Creating CatPhan600 object...')
+        cp = CatPhan600(tmpdirname)  # passiamo la cartella
+        cp.analyze()
 
-    # Custom CTP401 analysis (use central slice)
-    mid_idx = len(dicom_paths)//2
-    ds = pydicom.dcmread(dicom_paths[mid_idx])
-    img = ds.pixel_array.astype(float)
-    ctp401 = CTP401(img)
-    res_ctp401 = ctp401.analyze()
+        # Custom CTP401 analysis (use central slice)
+        mid_idx = len(uploaded_files)//2
+        ds = pydicom.dcmread(os.path.join(tmpdirname, uploaded_files[mid_idx].name))
+        img = ds.pixel_array.astype(float)
+        ctp401 = CTP401(img)
+        res_ctp401 = ctp401.analyze()
 
-    # Collect results
-    results = {
-        'CTP401': res_ctp401,
-        'CTP528': {'mtf': cp.ctp528.mtf['mtf'].tolist() if cp.ctp528.mtf else None},
-        'CTP515': {'rods': len(cp.ctp515.rods) if cp.ctp515.rods else 0},
-        'CTP486': {'num_markers': len(cp.ctp486.markers) if cp.ctp486.markers else 0}
-    }
+        # Collect results
+        results = {
+            'CTP401': res_ctp401,
+            'CTP528': {'mtf': cp.ctp528.mtf['mtf'].tolist() if cp.ctp528.mtf else None},
+            'CTP515': {'rods': len(cp.ctp515.rods) if cp.ctp515.rods else 0},
+            'CTP486': {'num_markers': len(cp.ctp486.markers) if cp.ctp486.markers else 0}
+        }
 
-    st.header('Results')
-    st.json(results)
+        st.header('Results')
+        st.json(results)
 
-    # MTF plot for CTP528
-    if results['CTP528']['mtf'] is not None:
-        fig, ax = plt.subplots()
-        ax.plot(results['CTP528']['mtf'])
-        ax.set_title('CTP528 MTF')
-        ax.set_xlabel('Frequency')
-        ax.set_ylabel('MTF')
-        st.pyplot(fig)
+        # MTF plot for CTP528
+        if results['CTP528']['mtf'] is not None:
+            fig, ax = plt.subplots()
+            ax.plot(results['CTP528']['mtf'])
+            ax.set_title('CTP528 MTF')
+            ax.set_xlabel('Frequency')
+            ax.set_ylabel('MTF')
+            st.pyplot(fig)
 
-    # PDF report generation
-    if st.button('Generate PDF Report'):
-        pdf = FPDF()
-        pdf.add_page()
-        pdf.set_font('Arial','B',16)
-        pdf.cell(0,10,'CatPhan 500 Report',ln=True)
-        pdf.set_font('Arial','',12)
-        for mod, res in results.items():
-            pdf.cell(0,8,f'Module: {mod}', ln=True)
-            if isinstance(res, dict):
-                for k,v in res.items():
-                    pdf.cell(0,6,f'  {k}: {v}', ln=True)
-        buf = io.BytesIO()
-        pdf.output(buf)
-        buf.seek(0)
-        st.download_button('Download PDF Report', data=buf, file_name='catphan500_report.pdf', mime='application/pdf')
+        # PDF report generation
+        if st.button('Generate PDF Report'):
+            pdf = FPDF()
+            pdf.add_page()
+            pdf.set_font('Arial','B',16)
+            pdf.cell(0,10,'CatPhan 500 Report',ln=True)
+            pdf.set_font('Arial','',12)
+            for mod, res in results.items():
+                pdf.cell(0,8,f'Module: {mod}', ln=True)
+                if isinstance(res, dict):
+                    for k,v in res.items():
+                        pdf.cell(0,6,f'  {k}: {v}', ln=True)
+            buf = io.BytesIO()
+            pdf.output(buf)
+            buf.seek(0)
+            st.download_button('Download PDF Report', data=buf, file_name='catphan500_report.pdf', mime='application/pdf')
 else:
     st.info('Upload DICOM files to start analysis.')
