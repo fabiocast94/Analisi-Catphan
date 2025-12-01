@@ -1,17 +1,25 @@
 import streamlit as st
+import zipfile
+import io
 import pydicom
 import numpy as np
 import matplotlib.pyplot as plt
 from skimage import measure, filters
 
 st.set_page_config(page_title="CTP401 QC Dashboard", layout="wide")
-st.title("Catphan 500 - CTP401 Analysis")
+st.title("Catphan 500 - CTP401 Analysis (ZIP Upload)")
 
-uploaded_files = st.file_uploader("Carica le immagini DICOM", type="dcm", accept_multiple_files=True)
+uploaded_zip = st.file_uploader("Carica un file ZIP con tutti i DICOM", type="zip")
 
-def load_dicom(file):
-    ds = pydicom.dcmread(file)
-    return ds.pixel_array, ds
+def load_dicom_from_zip(zip_file):
+    images = []
+    with zipfile.ZipFile(zip_file) as z:
+        for file_name in z.namelist():
+            if file_name.lower().endswith(".dcm"):
+                with z.open(file_name) as f:
+                    ds = pydicom.dcmread(f)
+                    images.append((ds.pixel_array, ds))
+    return images
 
 def show_image(img, title="Image"):
     st.subheader(title)
@@ -33,19 +41,16 @@ def detect_edges(img):
     edges = filters.sobel(img)
     return edges
 
-if uploaded_files:
-    st.success(f"{len(uploaded_files)} file caricati")
-    images = []
-    for f in uploaded_files:
-        img, ds = load_dicom(f)
-        images.append((img, ds))
-        show_image(img, title=f"Slice: {f.name}")
+if uploaded_zip:
+    images = load_dicom_from_zip(uploaded_zip)
+    st.success(f"{len(images)} DICOM trovati nel ZIP")
     
+    for i, (img, ds) in enumerate(images):
+        show_image(img, title=f"Slice {i+1}: {ds.SOPInstanceUID}")
+
     st.markdown("---")
     st.header("1️⃣ Sensitometry (Linearity)")
-    st.write("Seleziona ROI su ogni inserto e calcola la media dei valori CT")
-    # Esempio ROI - da adattare a ogni materiale
-    roi_coords = st.text_input("Inserisci ROI [x1,y1,x2,y2] separati da virgola", "50,50,100,100")
+    roi_coords = st.text_input("Inserisci ROI [x1,y1,x2,y2]", "50,50,100,100")
     roi_coords = [int(x) for x in roi_coords.split(",")]
     for img, ds in images:
         mean, std, roi = calc_roi_stats(img, roi_coords)
@@ -54,15 +59,12 @@ if uploaded_files:
     
     st.markdown("---")
     st.header("2️⃣ Scan Slice Geometry / Slice Sensitivity Profile")
-    st.write("Traccia un profilo lungo lo slice per calcolare FWHM")
-    # Linea di esempio
-    line_coords = [50, 100, 200, 100]  # x1, y1, x2, y2
+    line_coords = [50, 100, 200, 100]  # esempio
     for img, ds in images:
         plot_line_profile(img, line_coords)
     
     st.markdown("---")
     st.header("3️⃣ Pixel (Matrix) Size")
-    st.write("Misura oggetto noto e calcola dimensione pixel")
     obj_size_mm = st.number_input("Dimensione reale oggetto (mm)", value=25.0)
     pixel_count = st.number_input("Numero pixel oggetto", value=50)
     pixel_size = obj_size_mm / pixel_count
@@ -83,11 +85,10 @@ if uploaded_files:
     
     st.markdown("---")
     st.header("7️⃣ Scan Incrementation")
-    st.write("Verifica distanza tra slice successive")
     slice_positions = [float(ds.SliceLocation) for img, ds in images if hasattr(ds, "SliceLocation")]
     slice_positions.sort()
     increments = np.diff(slice_positions)
     st.write(f"Distanze tra slice: {increments}")
 
 st.markdown("---")
-st.write("Template base per CTP401 QC - da adattare ai tuoi protocolli specifici")
+st.write("Template base per CTP401 QC da ZIP - da adattare ai protocolli specifici")
