@@ -11,6 +11,7 @@ st.title("Catphan 500 - CTP401 Analysis (ZIP Upload)")
 
 uploaded_zip = st.file_uploader("Carica un file ZIP con tutti i DICOM", type="zip")
 
+# ---------- Funzioni ----------
 def load_dicom_from_zip(zip_file):
     images = []
     with zipfile.ZipFile(zip_file) as z:
@@ -21,9 +22,19 @@ def load_dicom_from_zip(zip_file):
                     images.append((ds.pixel_array, ds))
     return images
 
+def normalize_image(img):
+    """Normalizza array DICOM in uint8 per st.image"""
+    img_norm = img.astype(np.float32)
+    img_norm -= img_norm.min()
+    if img_norm.max() != 0:
+        img_norm /= img_norm.max()
+    img_norm = (img_norm * 255).astype(np.uint8)
+    return img_norm
+
 def show_image(img, title="Image"):
+    img_norm = normalize_image(img)
     st.subheader(title)
-    st.image(img, cmap="gray", use_column_width=True)
+    st.image(img_norm, cmap="gray", use_column_width=True)
 
 def calc_roi_stats(img, roi_coords):
     x1, y1, x2, y2 = roi_coords
@@ -41,6 +52,7 @@ def detect_edges(img):
     edges = filters.sobel(img)
     return edges
 
+# ---------- Caricamento ZIP ----------
 if uploaded_zip:
     images = load_dicom_from_zip(uploaded_zip)
     st.success(f"{len(images)} DICOM trovati nel ZIP")
@@ -55,7 +67,7 @@ if uploaded_zip:
     for img, ds in images:
         mean, std, roi = calc_roi_stats(img, roi_coords)
         st.write(f"Slice {ds.SOPInstanceUID}: Mean={mean:.2f}, Std={std:.2f}")
-        st.image(roi, caption="ROI", cmap="gray")
+        st.image(normalize_image(roi), caption="ROI", cmap="gray")
     
     st.markdown("---")
     st.header("2️⃣ Scan Slice Geometry / Slice Sensitivity Profile")
@@ -81,14 +93,4 @@ if uploaded_zip:
     
     st.markdown("---")
     st.header("5️⃣ Phantom Position Verification & 6️⃣ Patient Alignment System Check")
-    st.write("Misurare offset dal centro (da implementare ROI/marker automatici)")
-    
-    st.markdown("---")
-    st.header("7️⃣ Scan Incrementation")
-    slice_positions = [float(ds.SliceLocation) for img, ds in images if hasattr(ds, "SliceLocation")]
-    slice_positions.sort()
-    increments = np.diff(slice_positions)
-    st.write(f"Distanze tra slice: {increments}")
-
-st.markdown("---")
-st.write("Template base per CTP401 QC da ZIP - da adattare ai protocolli specifici")
+    st.write("Misurare offset dal centro (da implementare ROI/marker
