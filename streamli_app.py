@@ -1,6 +1,5 @@
 import streamlit as st
 import zipfile
-import io
 import pydicom
 import numpy as np
 import matplotlib.pyplot as plt
@@ -22,19 +21,23 @@ def load_dicom_from_zip(zip_file):
                     images.append((ds.pixel_array, ds))
     return images
 
-def normalize_image(img):
-    """Normalizza array DICOM in uint8 per st.image"""
+def show_image(img, title="Image"):
+    # Se l'immagine è 3D, prendi il primo slice
+    if img.ndim == 3:
+        img = img[0,:,:]
+    
+    # Sostituisci NaN e Inf con 0
+    img = np.nan_to_num(img, nan=0.0, posinf=0.0, neginf=0.0)
+    
+    # Normalizza tra 0 e 255
     img_norm = img.astype(np.float32)
     img_norm -= img_norm.min()
     if img_norm.max() != 0:
         img_norm /= img_norm.max()
     img_norm = (img_norm * 255).astype(np.uint8)
-    return img_norm
-
-def show_image(img, title="Image"):
-    img_norm = normalize_image(img)
+    
     st.subheader(title)
-    st.image(img_norm, cmap="gray", use_column_width=True)
+    st.image(img_norm, use_column_width=True)
 
 def calc_roi_stats(img, roi_coords):
     x1, y1, x2, y2 = roi_coords
@@ -67,7 +70,7 @@ if uploaded_zip:
     for img, ds in images:
         mean, std, roi = calc_roi_stats(img, roi_coords)
         st.write(f"Slice {ds.SOPInstanceUID}: Mean={mean:.2f}, Std={std:.2f}")
-        st.image(normalize_image(roi), caption="ROI", cmap="gray")
+        st.image(np.nan_to_num(roi, nan=0.0), caption="ROI", use_column_width=True)
     
     st.markdown("---")
     st.header("2️⃣ Scan Slice Geometry / Slice Sensitivity Profile")
