@@ -93,4 +93,14 @@ if uploaded_zip:
     
     st.markdown("---")
     st.header("5️⃣ Phantom Position Verification & 6️⃣ Patient Alignment System Check")
-    st.write("Misurare offset dal centro (da implementare ROI/marker
+    st.write("Misurare offset dal centro (da implementare ROI/marker automatici)")
+    
+    st.markdown("---")
+    st.header("7️⃣ Scan Incrementation")
+    slice_positions = [float(ds.SliceLocation) for img, ds in images if hasattr(ds, "SliceLocation")]
+    slice_positions.sort()
+    increments = np.diff(slice_positions)
+    st.write(f"Distanze tra slice: {increments}")
+
+st.markdown("---")
+st.write("Template base per CTP401 QC da ZIP - pronto per essere adattato ai protocolli specifici")
