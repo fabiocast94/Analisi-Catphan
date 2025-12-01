@@ -6,6 +6,7 @@ import numpy as np
 from fpdf import FPDF
 from pylinac import CatPhan600
 import tempfile
+import zipfile
 import os
 
 # ---------------------------
@@ -29,23 +30,22 @@ class CTP401:
 # ---------------------------
 st.title('CatPhan 500 Analyzer (based on CatPhan600)')
 
-uploaded_files = st.file_uploader('Upload DICOM files (CatPhan 500)', type=['dcm','dicom'], accept_multiple_files=True)
+uploaded_zip = st.file_uploader('Upload ZIP file with all DICOM images', type=['zip'])
 
-if uploaded_files:
-    # Save uploaded files to a temporary folder
+if uploaded_zip is not None:
     with tempfile.TemporaryDirectory() as tmpdirname:
-        for f in uploaded_files:
-            path = os.path.join(tmpdirname, f.name)
-            with open(path, 'wb') as out:
-                out.write(f.read())
+        # Extract ZIP
+        with zipfile.ZipFile(uploaded_zip, 'r') as zip_ref:
+            zip_ref.extractall(tmpdirname)
 
         st.info('Creating CatPhan600 object...')
-        cp = CatPhan600(tmpdirname)  # passiamo la cartella
+        cp = CatPhan600(tmpdirname, check_uid=False)
         cp.analyze()
 
         # Custom CTP401 analysis (use central slice)
-        mid_idx = len(uploaded_files)//2
-        ds = pydicom.dcmread(os.path.join(tmpdirname, uploaded_files[mid_idx].name))
+        dicom_files = [f for f in os.listdir(tmpdirname) if f.endswith('.dcm')]
+        mid_idx = len(dicom_files)//2
+        ds = pydicom.dcmread(os.path.join(tmpdirname, dicom_files[mid_idx]))
         img = ds.pixel_array.astype(float)
         ctp401 = CTP401(img)
         res_ctp401 = ctp401.analyze()
@@ -87,4 +87,4 @@ if uploaded_files:
             buf.seek(0)
             st.download_button('Download PDF Report', data=buf, file_name='catphan500_report.pdf', mime='application/pdf')
 else:
-    st.info('Upload DICOM files to start analysis.')
+    st.info('Upload a ZIP file with all DICOM images to start analysis.')
