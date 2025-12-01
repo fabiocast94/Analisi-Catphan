@@ -9,36 +9,69 @@ import zipfile
 import os
 
 # ---------------------------
-# Custom CTP401 Module - Sensitometry only with ROI visualization
+# Custom CTP401 Module with automatic slice selection and ROI placement
 # ---------------------------
 class CTP401:
-    def __init__(self, dicom_files, inserts=None):
+    def __init__(self, dicom_files, roi_offsets=None):
         self.dicom_files = dicom_files
-        # inserts: dict with insert name -> ROI coords (x1,y1,x2,y2) on central slice
-        self.inserts = inserts or {}
+        # roi_offsets: dict with insert name -> (x_offset, y_offset, width, height) relative to phantom center
+        self.roi_offsets = roi_offsets or {
+            'Teflon': (-40, -20, 20, 20),
+            'Aria': (-10, -20, 20, 20),
+            'Acrilico': (20, -20, 20, 20),
+            'LDPE': (50, -20, 20, 20)
+        }
         self.results = {}
 
-    def sensitometry_linearity(self):
-        # Use central slice for analysis
-        mid_idx = len(self.dicom_files)//2
-        ds = pydicom.dcmread(self.dicom_files[mid_idx])
-        img = ds.pixel_array.astype(float)
+    def find_central_slice(self):
+        # Select slice with max std in central area (heuristic for insert visibility)
+        max_std = -1
+        selected_idx = 0
+        for i, f in enumerate(self.dicom_files):
+            ds = pydicom.dcmread(f)
+            img = ds.pixel_array.astype(float)
+            h, w = img.shape
+            # central 100x100 region
+            roi = img[h//2-50:h//2+50, w//2-50:w//2+50]
+            s = np.std(roi)
+            if s > max_std:
+                max_std = s
+                selected_idx = i
+        self.central_slice_idx = selected_idx
+        self.central_ds = pydicom.dcmread(self.dicom_files[self.central_slice_idx])
+        self.central_img = self.central_ds.pixel_array.astype(float)
 
-        sensi_results = {}
+    def find_phantom_center(self):
+        img = self.central_img
+        # threshold to find bright regions (phantom body)
+        thresh = np.percentile(img, 80)
+        mask = img > thresh
+        y, x = np.where(mask)
+        cx = int(np.mean(x))
+        cy = int(np.mean(y))
+        self.phantom_center = (cx, cy)
+
+    def sensitometry_linearity(self):
+        self.find_central_slice()
+        self.find_phantom_center()
         fig, ax = plt.subplots()
-        ax.imshow(img, cmap='gray')
-        for name, coords in self.inserts.items():
-            x1, y1, x2, y2 = coords
-            roi = img[y1:y2, x1:x2]
+        ax.imshow(self.central_img, cmap='gray')
+        sensi_results = {}
+        cx, cy = self.phantom_center
+        for name, (dx, dy, w, h) in self.roi_offsets.items():
+            x1 = cx + dx
+            y1 = cy + dy
+            x2 = x1 + w
+            y2 = y1 + h
+            roi = self.central_img[y1:y2, x1:x2]
             sensi_results[name] = {
                 'mean': float(np.mean(roi)),
                 'std': float(np.std(roi))
             }
-            # Draw ROI rectangle
-            rect = plt.Rectangle((x1, y1), x2-x1, y2-y1, edgecolor='red', facecolor='none', linewidth=1.5)
+            # draw rectangle
+            rect = plt.Rectangle((x1, y1), w, h, edgecolor='red', facecolor='none', linewidth=1.5)
             ax.add_patch(rect)
             ax.text(x1, y1-5, name, color='red', fontsize=8)
-
         self.results['sensitometry'] = sensi_results
         self.fig = fig
 
@@ -71,16 +104,8 @@ if uploaded_zip is not None:
         else:
             dicom_files.sort()  # optionally sort by name
 
-            # Define insert ROIs (example coordinates, user should adjust per phantom)
-            inserts = {
-                'Teflon': (30,30,50,50),
-                'Aria': (60,30,80,50),
-                'Acrilico': (90,30,110,50),
-                'LDPE': (120,30,140,50)
-            }
-
             # Analyze CTP401
-            ctp401 = CTP401(dicom_files, inserts=inserts)
+            ctp401 = CTP401(dicom_files)
             results = ctp401.analyze()
 
             # Display results
