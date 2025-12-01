@@ -1,5 +1,9 @@
-streamlit
-pylinac
-pydicom
-numpy
-matplotlib
+streamlit 
+pydicom 
+numpy 
+scipy 
+matplotlib 
+opencv-python 
+fpdf 
+pylinac 
+scikit-learn
