@@ -4,7 +4,7 @@ import pydicom
 import matplotlib.pyplot as plt
 import numpy as np
 from fpdf import FPDF
-from pylinac import CatPhan
+from pylinac import CatPhan600
 
 # ---------------------------
 # Custom CTP401 Module
@@ -25,7 +25,7 @@ class CTP401:
 # ---------------------------
 # Streamlit App
 # ---------------------------
-st.title('CatPhan 500 Analyzer with pylinac')
+st.title('CatPhan 500 Analyzer (based on CatPhan600)')
 
 uploaded_files = st.file_uploader('Upload DICOM files (CatPhan 500)', type=['dcm','dicom'], accept_multiple_files=True)
 
@@ -36,10 +36,8 @@ if uploaded_files:
             temp_file.write(f.read())
             dicom_paths.append(f.name)
 
-    st.info('Creating CatPhan object...')
-    cp = CatPhan(dicom_paths, name='CatPhan500')
-
-    st.info('Analyzing modules with pylinac...')
+    st.info('Creating CatPhan600 object...')
+    cp = CatPhan600(dicom_paths)
     cp.analyze()
 
     # Custom CTP401 analysis (use central slice)
@@ -51,28 +49,17 @@ if uploaded_files:
 
     # Collect results
     results = {
-        'CTP401': res_ctp401
+        'CTP401': res_ctp401,
+        'CTP528': {'mtf': cp.ctp528.mtf['mtf'].tolist() if cp.ctp528.mtf else None},
+        'CTP515': {'rods': len(cp.ctp515.rods) if cp.ctp515.rods else 0},
+        'CTP486': {'num_markers': len(cp.ctp486.markers) if cp.ctp486.markers else 0}
     }
-
-    # Add pylinac module results
-    if hasattr(cp, 'ctp528'):
-        results['CTP528'] = {
-            'mtf': cp.ctp528.mtf['mtf'].tolist() if cp.ctp528.mtf else None
-        }
-    if hasattr(cp, 'ctp515'):
-        results['CTP515'] = {
-            'rods': len(cp.ctp515.rods) if cp.ctp515.rods else 0
-        }
-    if hasattr(cp, 'ctp486'):
-        results['CTP486'] = {
-            'num_markers': len(cp.ctp486.markers) if cp.ctp486.markers else 0
-        }
 
     st.header('Results')
     st.json(results)
 
     # MTF plot for CTP528
-    if 'CTP528' in results and results['CTP528']['mtf'] is not None:
+    if results['CTP528']['mtf'] is not None:
         fig, ax = plt.subplots()
         ax.plot(results['CTP528']['mtf'])
         ax.set_title('CTP528 MTF')
