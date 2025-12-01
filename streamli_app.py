@@ -7,43 +7,44 @@ from fpdf import FPDF
 import tempfile
 import zipfile
 import os
+import cv2
 
 # ---------------------------
-# Custom CTP401 Module with automatic slice selection and ROI placement
+# Custom CTP401 Module with automatic slice detection via ramps
 # ---------------------------
 class CTP401:
     def __init__(self, dicom_files, roi_offsets=None):
         self.dicom_files = dicom_files
-        # roi_offsets: dict with insert name -> (x_offset, y_offset, width, height) relative to phantom center
+        # roi_offsets: dict with insert name -> (dx, dy, w, h) relative to phantom center
         self.roi_offsets = roi_offsets or {
-            'Teflon': (-40, -20, 20, 20),
-            'Aria': (-10, -20, 20, 20),
-            'Acrilico': (20, -20, 20, 20),
-            'LDPE': (50, -20, 20, 20)
+            'Teflon': (0, -50, 20, 20),
+            'Aria': (0, 50, 20, 20),
+            'Acrilico': (-50, 0, 20, 20),
+            'LDPE': (50, 0, 20, 20)
         }
         self.results = {}
 
-    def find_central_slice(self):
-        # Select slice with max std in central area (heuristic for insert visibility)
-        max_std = -1
+    def detect_ctp401_slice(self):
+        # Heuristic: find slice with 4 ramps using edge detection
+        max_ramps = 0
         selected_idx = 0
         for i, f in enumerate(self.dicom_files):
             ds = pydicom.dcmread(f)
-            img = ds.pixel_array.astype(float)
-            h, w = img.shape
-            # central 100x100 region
-            roi = img[h//2-50:h//2+50, w//2-50:w//2+50]
-            s = np.std(roi)
-            if s > max_std:
-                max_std = s
+            img = ds.pixel_array.astype(np.float32)
+            img = cv2.normalize(img, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+            edges = cv2.Canny(img, 50, 150)
+            # Find lines using Hough transform
+            lines = cv2.HoughLines(edges, 1, np.pi/180, 100)
+            n_lines = len(lines) if lines is not None else 0
+            if n_lines > max_ramps:
+                max_ramps = n_lines
                 selected_idx = i
-        self.central_slice_idx = selected_idx
-        self.central_ds = pydicom.dcmread(self.dicom_files[self.central_slice_idx])
-        self.central_img = self.central_ds.pixel_array.astype(float)
+        self.slice_idx = selected_idx
+        self.ds_slice = pydicom.dcmread(self.dicom_files[self.slice_idx])
+        self.img_slice = self.ds_slice.pixel_array.astype(float)
 
     def find_phantom_center(self):
-        img = self.central_img
-        # threshold to find bright regions (phantom body)
+        img = self.img_slice
         thresh = np.percentile(img, 80)
         mask = img > thresh
         y, x = np.where(mask)
@@ -52,10 +53,10 @@ class CTP401:
         self.phantom_center = (cx, cy)
 
     def sensitometry_linearity(self):
-        self.find_central_slice()
+        self.detect_ctp401_slice()
         self.find_phantom_center()
         fig, ax = plt.subplots()
-        ax.imshow(self.central_img, cmap='gray')
+        ax.imshow(self.img_slice, cmap='gray')
         sensi_results = {}
         cx, cy = self.phantom_center
         for name, (dx, dy, w, h) in self.roi_offsets.items():
@@ -63,12 +64,11 @@ class CTP401:
             y1 = cy + dy
             x2 = x1 + w
             y2 = y1 + h
-            roi = self.central_img[y1:y2, x1:x2]
+            roi = self.img_slice[y1:y2, x1:x2]
             sensi_results[name] = {
                 'mean': float(np.mean(roi)),
                 'std': float(np.std(roi))
             }
-            # draw rectangle
             rect = plt.Rectangle((x1, y1), w, h, edgecolor='red', facecolor='none', linewidth=1.5)
             ax.add_patch(rect)
             ax.text(x1, y1-5, name, color='red', fontsize=8)
@@ -88,11 +88,9 @@ uploaded_zip = st.file_uploader('Upload ZIP file with all DICOM images', type=['
 
 if uploaded_zip is not None:
     with tempfile.TemporaryDirectory() as tmpdirname:
-        # Extract ZIP
         with zipfile.ZipFile(uploaded_zip, 'r') as zip_ref:
             zip_ref.extractall(tmpdirname)
 
-        # List all DICOM files recursively (case-insensitive)
         dicom_files = []
         for root, _, files in os.walk(tmpdirname):
             for f in files:
@@ -102,21 +100,16 @@ if uploaded_zip is not None:
         if not dicom_files:
             st.error("Nessun file DICOM trovato nel ZIP.")
         else:
-            dicom_files.sort()  # optionally sort by name
-
-            # Analyze CTP401
+            dicom_files.sort()
             ctp401 = CTP401(dicom_files)
             results = ctp401.analyze()
 
-            # Display results
             st.header('CTP401 Sensitometry Results')
             st.json(results)
 
-            # Show image with ROI
             st.subheader('ROI Visualization')
             st.pyplot(ctp401.fig)
 
-            # PDF report generation
             if st.button('Generate PDF Report'):
                 pdf = FPDF()
                 pdf.add_page()
