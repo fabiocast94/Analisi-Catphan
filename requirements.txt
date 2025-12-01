@@ -1,9 +1,9 @@
-streamlit 
-pydicom 
-numpy 
-scipy 
-matplotlib 
-opencv-python 
-fpdf 
-pylinac 
+streamlit
+pydicom
+numpy
+scipy
+matplotlib
+fpdf
+pylinac
 scikit-learn
+opencv-python-headless
