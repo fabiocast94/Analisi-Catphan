@@ -4,26 +4,23 @@ import pydicom
 import matplotlib.pyplot as plt
 import numpy as np
 from fpdf import FPDF
-from pylinac.ct import CatPhan, CTP528, CTP515, CTP486, CTPModule
+from pylinac import CatPhan
 
 # ---------------------------
 # Custom CTP401 Module
 # ---------------------------
-class CTP401(CTPModule):
-    def __init__(self, catphan, name='CTP401'):
-        super().__init__(catphan, name)
-        self.roi_size = 50  # size of central ROI for uniformity/noise
+class CTP401:
+    def __init__(self, image):
+        self.image = image
+        self.name = 'CTP401'
 
     def analyze(self):
-        img = self.image  # assumes central slice
-        h, w = img.shape
+        h, w = self.image.shape
         cx, cy = w//2, h//2
-        half = self.roi_size // 2
-        roi = img[cy-half:cy+half, cx-half:cx+half]
+        roi = self.image[cy-25:cy+25, cx-25:cx+25]  # central 50x50 ROI
         mean = float(np.mean(roi))
         noise = float(np.std(roi))
-        self.results = {'mean': mean, 'noise': noise}
-        return self.results
+        return {'mean': mean, 'noise': noise}
 
 # ---------------------------
 # Streamlit App
@@ -39,38 +36,49 @@ if uploaded_files:
             temp_file.write(f.read())
             dicom_paths.append(f.name)
 
-    st.info('Creating CatPhan object with custom CTP401 module...')
-
-    # Create CatPhan with default modules
+    st.info('Creating CatPhan object...')
     cp = CatPhan(dicom_paths, name='CatPhan500')
 
-    # Add custom CTP401 module
-    cp.modules.append(CTP401(cp))
+    st.info('Analyzing modules with pylinac...')
+    cp.analyze()
 
-    st.info('Analyzing modules...')
-    results = {}
+    # Custom CTP401 analysis (use central slice)
+    mid_idx = len(dicom_paths)//2
+    ds = pydicom.dcmread(dicom_paths[mid_idx])
+    img = ds.pixel_array.astype(float)
+    ctp401 = CTP401(img)
+    res_ctp401 = ctp401.analyze()
 
-    # Analyze each module
-    for module in cp.modules:
-        try:
-            res = module.analyze()
-            results[module.name] = res
-        except Exception as e:
-            results[module.name] = f'Error: {e}'
+    # Collect results
+    results = {
+        'CTP401': res_ctp401
+    }
+
+    # Add pylinac module results
+    if hasattr(cp, 'ctp528'):
+        results['CTP528'] = {
+            'mtf': cp.ctp528.mtf['mtf'].tolist() if cp.ctp528.mtf else None
+        }
+    if hasattr(cp, 'ctp515'):
+        results['CTP515'] = {
+            'rods': len(cp.ctp515.rods) if cp.ctp515.rods else 0
+        }
+    if hasattr(cp, 'ctp486'):
+        results['CTP486'] = {
+            'num_markers': len(cp.ctp486.markers) if cp.ctp486.markers else 0
+        }
 
     st.header('Results')
     st.json(results)
 
-    # Display MTF plot for CTP528
-    if 'CTP528' in results:
-        module_528 = next((m for m in cp.modules if isinstance(m, CTP528)), None)
-        if module_528:
-            fig, ax = plt.subplots()
-            ax.plot(module_528.mtf['freq'], module_528.mtf['mtf'])
-            ax.set_title('CTP528 MTF')
-            ax.set_xlabel('cycles/mm')
-            ax.set_ylabel('MTF')
-            st.pyplot(fig)
+    # MTF plot for CTP528
+    if 'CTP528' in results and results['CTP528']['mtf'] is not None:
+        fig, ax = plt.subplots()
+        ax.plot(results['CTP528']['mtf'])
+        ax.set_title('CTP528 MTF')
+        ax.set_xlabel('Frequency')
+        ax.set_ylabel('MTF')
+        st.pyplot(fig)
 
     # PDF report generation
     if st.button('Generate PDF Report'):
@@ -84,8 +92,6 @@ if uploaded_files:
             if isinstance(res, dict):
                 for k,v in res.items():
                     pdf.cell(0,6,f'  {k}: {v}', ln=True)
-            else:
-                pdf.cell(0,6,str(res), ln=True)
         buf = io.BytesIO()
         pdf.output(buf)
         buf.seek(0)
