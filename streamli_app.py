@@ -8,64 +8,41 @@ import zipfile
 import os
 
 # ---------------------------
-# Custom CTP401 Module with full tests
+# Custom CTP401 Module - simplified
+# Slice width and sensitometry
 # ---------------------------
 class CTP401:
-    def __init__(self, dicom_files):
+    def __init__(self, dicom_files, inserts=None):
         self.dicom_files = dicom_files
+        # inserts: dict with insert name -> ROI coords (x1,y1,x2,y2) on central slice
+        self.inserts = inserts or {}
         self.results = {}
 
-    def pixel_size_matrix(self):
-        ds = pydicom.dcmread(self.dicom_files[0])
-        self.results['pixel_spacing'] = ds.PixelSpacing  # [row_spacing, col_spacing]
-        self.results['matrix_size'] = (ds.Rows, ds.Columns)
-
-    def scan_incrementation(self):
+    def slice_width(self):
         positions = [pydicom.dcmread(f).ImagePositionPatient[2] for f in self.dicom_files]
         increments = np.diff(positions)
-        self.results['slice_increments'] = increments.tolist()
-        self.results['mean_increment'] = float(np.mean(increments))
-
-    def phantom_position_verification(self):
-        # Approximate using geometric center of first slice
-        ds = pydicom.dcmread(self.dicom_files[len(self.dicom_files)//2])
-        self.results['phantom_center'] = (ds.Rows/2, ds.Columns/2)
-
-    def circular_symmetry(self):
-        # Check center of phantom using central ROI
-        ds = pydicom.dcmread(self.dicom_files[len(self.dicom_files)//2])
-        img = ds.pixel_array.astype(float)
-        h, w = img.shape
-        cx, cy = w//2, h//2
-        roi = img[cy-25:cy+25, cx-25:cx+25]
-        self.results['circular_symmetry'] = {'mean_roi': float(np.mean(roi)), 'std_roi': float(np.std(roi))}
-
-    def patient_alignment_check(self):
-        # Placeholder: use same as phantom center
-        self.results['patient_alignment'] = self.results.get('phantom_center', None)
+        self.results['slice_width_mean'] = float(np.mean(increments))
+        self.results['slice_width_std'] = float(np.std(increments))
 
     def sensitometry_linearity(self):
-        # Placeholder: use mean pixel of all slices
-        means = []
-        for f in self.dicom_files:
-            ds = pydicom.dcmread(f)
-            means.append(np.mean(ds.pixel_array))
-        self.results['sensitometry_linearity'] = {'mean_values': [float(m) for m in means]}
+        # Measure mean and std for each insert in central slice
+        mid_idx = len(self.dicom_files)//2
+        ds = pydicom.dcmread(self.dicom_files[mid_idx])
+        img = ds.pixel_array.astype(float)
 
-    def scan_slice_geometry(self):
-        # Placeholder: use number of slices and difference between first and last Z
-        positions = [pydicom.dcmread(f).ImagePositionPatient[2] for f in self.dicom_files]
-        slice_width = float(np.abs(positions[-1] - positions[0])/len(positions))
-        self.results['slice_width'] = slice_width
+        sensi_results = {}
+        for name, coords in self.inserts.items():
+            x1, y1, x2, y2 = coords
+            roi = img[y1:y2, x1:x2]
+            sensi_results[name] = {
+                'mean': float(np.mean(roi)),
+                'std': float(np.std(roi))
+            }
+        self.results['sensitometry'] = sensi_results
 
     def analyze(self):
-        self.pixel_size_matrix()
-        self.scan_incrementation()
-        self.phantom_position_verification()
-        self.circular_symmetry()
-        self.patient_alignment_check()
+        self.slice_width()
         self.sensitometry_linearity()
-        self.scan_slice_geometry()
         return self.results
 
 # ---------------------------
@@ -93,8 +70,15 @@ if uploaded_zip is not None:
         else:
             dicom_files.sort()  # optionally sort by name
 
+            # Define insert ROIs (example coordinates, user should adjust per phantom)
+            inserts = {
+                'Teflon': (30,30,50,50),
+                'Delrin': (60,30,80,50),
+                'LDPE': (90,30,110,50)
+            }
+
             # Analyze CTP401
-            ctp401 = CTP401(dicom_files)
+            ctp401 = CTP401(dicom_files, inserts=inserts)
             results = ctp401.analyze()
 
             # Display results
@@ -108,8 +92,11 @@ if uploaded_zip is not None:
                 pdf.set_font('Arial','B',16)
                 pdf.cell(0,10,'CatPhan 500 - CTP401 Report',ln=True)
                 pdf.set_font('Arial','',12)
-                for k, v in results.items():
-                    pdf.cell(0,6,f'{k}: {v}', ln=True)
+                pdf.cell(0,6,f"Slice Width Mean: {results['slice_width_mean']}", ln=True)
+                pdf.cell(0,6,f"Slice Width Std: {results['slice_width_std']}", ln=True)
+                pdf.cell(0,6,'Sensitometry:', ln=True)
+                for name, val in results['sensitometry'].items():
+                    pdf.cell(0,6,f"{name}: mean={val['mean']}, std={val['std']}", ln=True)
                 buf = io.BytesIO()
                 pdf.output(buf)
                 buf.seek(0)
