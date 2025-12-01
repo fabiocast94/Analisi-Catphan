@@ -2,14 +2,14 @@ import streamlit as st
 import io
 import pydicom
 import numpy as np
+import matplotlib.pyplot as plt
 from fpdf import FPDF
 import tempfile
 import zipfile
 import os
 
 # ---------------------------
-# Custom CTP401 Module - simplified
-# Slice width and sensitometry
+# Custom CTP401 Module - Sensitometry only with ROI visualization
 # ---------------------------
 class CTP401:
     def __init__(self, dicom_files, inserts=None):
@@ -18,19 +18,15 @@ class CTP401:
         self.inserts = inserts or {}
         self.results = {}
 
-    def slice_width(self):
-        positions = [pydicom.dcmread(f).ImagePositionPatient[2] for f in self.dicom_files]
-        increments = np.diff(positions)
-        self.results['slice_width_mean'] = float(np.mean(increments))
-        self.results['slice_width_std'] = float(np.std(increments))
-
     def sensitometry_linearity(self):
-        # Measure mean and std for each insert in central slice
+        # Use central slice for analysis
         mid_idx = len(self.dicom_files)//2
         ds = pydicom.dcmread(self.dicom_files[mid_idx])
         img = ds.pixel_array.astype(float)
 
         sensi_results = {}
+        fig, ax = plt.subplots()
+        ax.imshow(img, cmap='gray')
         for name, coords in self.inserts.items():
             x1, y1, x2, y2 = coords
             roi = img[y1:y2, x1:x2]
@@ -38,17 +34,22 @@ class CTP401:
                 'mean': float(np.mean(roi)),
                 'std': float(np.std(roi))
             }
+            # Draw ROI rectangle
+            rect = plt.Rectangle((x1, y1), x2-x1, y2-y1, edgecolor='red', facecolor='none', linewidth=1.5)
+            ax.add_patch(rect)
+            ax.text(x1, y1-5, name, color='red', fontsize=8)
+
         self.results['sensitometry'] = sensi_results
+        self.fig = fig
 
     def analyze(self):
-        self.slice_width()
         self.sensitometry_linearity()
         return self.results
 
 # ---------------------------
 # Streamlit App
 # ---------------------------
-st.title('CatPhan 500 Analyzer - CTP401 Module')
+st.title('CatPhan 500 Analyzer - CTP401 Sensitometry')
 
 uploaded_zip = st.file_uploader('Upload ZIP file with all DICOM images', type=['zip'])
 
@@ -73,8 +74,9 @@ if uploaded_zip is not None:
             # Define insert ROIs (example coordinates, user should adjust per phantom)
             inserts = {
                 'Teflon': (30,30,50,50),
-                'Delrin': (60,30,80,50),
-                'LDPE': (90,30,110,50)
+                'Aria': (60,30,80,50),
+                'Acrilico': (90,30,110,50),
+                'LDPE': (120,30,140,50)
             }
 
             # Analyze CTP401
@@ -82,18 +84,20 @@ if uploaded_zip is not None:
             results = ctp401.analyze()
 
             # Display results
-            st.header('CTP401 Results')
+            st.header('CTP401 Sensitometry Results')
             st.json(results)
+
+            # Show image with ROI
+            st.subheader('ROI Visualization')
+            st.pyplot(ctp401.fig)
 
             # PDF report generation
             if st.button('Generate PDF Report'):
                 pdf = FPDF()
                 pdf.add_page()
                 pdf.set_font('Arial','B',16)
-                pdf.cell(0,10,'CatPhan 500 - CTP401 Report',ln=True)
+                pdf.cell(0,10,'CatPhan 500 - CTP401 Sensitometry Report',ln=True)
                 pdf.set_font('Arial','',12)
-                pdf.cell(0,6,f"Slice Width Mean: {results['slice_width_mean']}", ln=True)
-                pdf.cell(0,6,f"Slice Width Std: {results['slice_width_std']}", ln=True)
                 pdf.cell(0,6,'Sensitometry:', ln=True)
                 for name, val in results['sensitometry'].items():
                     pdf.cell(0,6,f"{name}: mean={val['mean']}, std={val['std']}", ln=True)
