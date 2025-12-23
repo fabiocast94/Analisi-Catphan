@@ -354,18 +354,8 @@ with tab5:
 
     uploaded_file = st.file_uploader("Carica un file ZIP contenente immagini DICOM", type="zip")
 
+    # Selezione modello CatPhan
     catphan_model = st.selectbox("Seleziona modello CatPhan", ["CatPhan504", "CatPhan600"])
-
-    # Definiamo i moduli disponibili per ogni modello
-    moduli_per_modelo = {
-        "CatPhan504": ["CTP404", "CTP486", "CTP528", "CTP515"],  # aggiungi altri se necessario
-        "CatPhan600": ["CTP404", "CTP486", "CTP528", "CTP515", "CTP598"]  # esempio
-    }
-
-    selected_modules = st.multiselect(
-        "Seleziona moduli da analizzare (lascia vuoto per tutti disponibili)",
-        options=moduli_per_modelo[catphan_model]
-    )
 
     if uploaded_file and st.button("Esegui analisi CatPhan"):
         import tempfile
@@ -402,11 +392,8 @@ with tab5:
                         else:
                             catphan = CatPhan600(dicom_files)
 
-                        # Analizza, con eventuale filtro moduli
-                        if selected_modules:
-                            catphan.analyze(modules=selected_modules)
-                        else:
-                            catphan.analyze()  # tutti i moduli disponibili
+                        # Analizza tutte le immagini presenti
+                        catphan.analyze()
 
                         risultati = catphan.results()
                         st.text(risultati)
