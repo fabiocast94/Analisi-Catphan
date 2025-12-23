@@ -352,10 +352,20 @@ with tab4:
 with tab5:
     st.header("CBCT CatPhan")
 
-    # Selezione modello CatPhan
+    uploaded_file = st.file_uploader("Carica un file ZIP contenente immagini DICOM", type="zip")
+
     catphan_model = st.selectbox("Seleziona modello CatPhan", ["CatPhan504", "CatPhan600"])
 
-    uploaded_file = st.file_uploader("Carica un file ZIP contenente immagini DICOM", type="zip")
+    # Definiamo i moduli disponibili per ogni modello
+    moduli_per_modelo = {
+        "CatPhan504": ["CTP404", "CTP486", "CTP528", "CTP515"],  # aggiungi altri se necessario
+        "CatPhan600": ["CTP404", "CTP486", "CTP528", "CTP515", "CTP598"]  # esempio
+    }
+
+    selected_modules = st.multiselect(
+        "Seleziona moduli da analizzare (lascia vuoto per tutti disponibili)",
+        options=moduli_per_modelo[catphan_model]
+    )
 
     if uploaded_file and st.button("Esegui analisi CatPhan"):
         import tempfile
@@ -386,20 +396,19 @@ with tab5:
                     st.success(f"Trovati {len(dicom_files)} file DICOM.")
 
                     try:
-                        ds = pydicom.dcmread(dicom_files[0])
-                        st.write(f"**Patient Name:** {ds.get('PatientName', 'N/A')}")
-                        st.write(f"**Study Date:** {ds.get('StudyDate', 'N/A')}")
-                        st.write(f"**Modality:** {ds.get('Modality', 'N/A')}")
-
-                        # Analisi CatPhan selezionata
+                        # Inizializza il modello scelto
                         if catphan_model == "CatPhan504":
                             catphan = CatPhan504(dicom_files)
                         else:
                             catphan = CatPhan600(dicom_files)
 
-                        catphan.analyze()
-                        risultati = catphan.results()
+                        # Analizza, con eventuale filtro moduli
+                        if selected_modules:
+                            catphan.analyze(modules=selected_modules)
+                        else:
+                            catphan.analyze()  # tutti i moduli disponibili
 
+                        risultati = catphan.results()
                         st.text(risultati)
                         catphan.plot_analyzed_image()
                         st.pyplot(plt.gcf())
@@ -410,7 +419,7 @@ with tab5:
                                 f"CBCT {catphan_model}", risultati, catphan, utente, linac, energia
                             )
                             st.download_button(
-                                "📥 Scarica Report CBCT PDF",
+                                "📥 Scarica Report CBCT CatPhan PDF",
                                 data=report_pdf,
                                 file_name=f"QA_Report_CBCT_{catphan_model}.pdf",
                                 mime="application/pdf"
