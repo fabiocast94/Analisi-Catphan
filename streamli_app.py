@@ -1,128 +1,637 @@
-import streamlit as st
-import zipfile
-import pydicom
+# IMPORT
 import numpy as np
+from pylinac.core.image import DicomImage
+import streamlit as st
+from pylinac import DRMLC
 import matplotlib.pyplot as plt
-from skimage import measure, filters
+from pylinac import DRGS, PicketFence, Starshot, CatPhan504, CatPhan600, WinstonLutz, FieldAnalysis
+from pylinac.field_analysis import Interpolation, Normalization, Centering
+from reportlab.pdfgen import canvas
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.utils import ImageReader
+from PIL import Image
+import warnings
+import datetime
+import os
+from io import BytesIO
+import tempfile
+import pydicom
+import math
 
-st.set_page_config(page_title="CTP401 QC Dashboard", layout="wide")
-st.title("Catphan 500 - CTP401 Analysis (ZIP Upload)")
+warnings.filterwarnings("ignore", category=PendingDeprecationWarning)
 
-# ---------- Funzioni ----------
-def load_dicom_from_zip(zip_file):
-    images = []
-    with zipfile.ZipFile(zip_file) as z:
-        for file_name in z.namelist():
-            if file_name.lower().endswith(".dcm"):
-                with z.open(file_name) as f:
-                    ds = pydicom.dcmread(f)
-                    images.append((ds.pixel_array, ds))
-    return images
+# CONFIGURAZIONE PAGINA
+st.set_page_config(page_title="Controlli Qualità LINAC", layout="wide")
 
-def normalize_image(img):
-    img = np.nan_to_num(img, nan=0.0, posinf=0.0, neginf=0.0)
-    if img.ndim == 3:
-        img = img[0,:,:]
-    img_norm = img.astype(np.float32)
-    img_norm -= img_norm.min()
-    if img_norm.max() != 0:
-        img_norm /= img_norm.max()
-    img_norm = (img_norm * 255).astype(np.uint8)
-    return img_norm
+# LOGO + TITOLO
+logo_file_path = "logo.png"
 
-def show_image(img, title="Image"):
-    img_norm = normalize_image(img)
-    st.subheader(title)
-    st.image(img_norm, use_column_width=True)
+def mostra_logo_e_titolo(logo_path, titolo):
+    logo = Image.open(logo_path)
+    import base64
+    buffered = BytesIO()
+    logo.save(buffered, format="PNG")
+    img_str = base64.b64encode(buffered.getvalue()).decode()
 
-def calc_roi_stats(img, roi_coords):
-    x1, y1, x2, y2 = roi_coords
-    roi = img[y1:y2, x1:x2]
-    mean = np.mean(roi)
-    std = np.std(roi)
-    return mean, std, roi
+    st.markdown(
+        f"""
+        <div style="text-align: center;">
+            <img src="data:image/png;base64,{img_str}" style="max-width: 300px; height: auto; margin-bottom: 10px;" />
+            <h1 style="margin: 0;">{titolo}</h1>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
 
-def plot_line_profile(img, line_coords):
-    x1, y1, x2, y2 = line_coords
-    profile = img[y1:y2, x1:x2].mean(axis=0)
-    st.line_chart(profile)
+mostra_logo_e_titolo(logo_file_path, "Controlli Qualità LINAC")
 
-def detect_edges(img):
-    edges = filters.sobel(img)
-    return edges
+# DATI GENERALI
+utente = st.text_input("Nome Utente")
+linac = st.selectbox("Seleziona Linac", ["Linac 4791", "Edge", "Linac 6322", "Linac 1015", "STx", "Trilogy", "TueBeam PIO"])
+energia = st.selectbox("Seleziona Energia", ["6 MV", "10 MV", "15 MV", "6 FFF", "10 FFF"])
 
-def find_marker_slice(images, marker_roi=(0, 0, 20, 50), threshold=200):
-    """
-    Trova la slice corretta basandosi su un marker bianco nella zona sinistra.
-    marker_roi: (x1, y1, x2, y2) del ROI dove cercare il marker
-    threshold: soglia di pixel per considerare marker presente
-    """
-    x1, y1, x2, y2 = marker_roi
-    for img, ds in images:
-        if img.ndim == 3:
-            img_slice = img[0,:,:]
+# FUNZIONE PDF
+def crea_report_pdf_senza_immagini(titolo, risultati, pylinac_obj, utente, linac, energia):
+    from reportlab.pdfgen import canvas
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.utils import ImageReader
+    from PIL import Image
+    from io import BytesIO
+    import datetime
+
+    buffer = BytesIO()
+    c = canvas.Canvas(buffer, pagesize=A4)
+    width, height = A4
+
+    # Inserisci logo centrato in alto
+    try:
+        logo = Image.open(logo_file_path)
+        max_width = width * 0.6
+        wpercent = max_width / float(logo.size[0])
+        hsize = int((float(logo.size[1]) * float(wpercent)))
+        logo = logo.resize((int(max_width), hsize), Image.Resampling.LANCZOS)
+        img_io = BytesIO()
+        logo.save(img_io, format="PNG")
+        img_io.seek(0)
+        x = (width - max_width) / 2
+        y = height - hsize - 50
+        c.drawImage(ImageReader(img_io), x, y, width=max_width, height=hsize, mask='auto')
+    except Exception:
+        pass
+
+    y_start = height - 180
+
+    c.setFont("Helvetica-Bold", 14)
+    c.drawString(50, y_start, f"Controlli Qualità LINAC - {titolo}")
+    c.setFont("Helvetica", 12)
+    c.drawString(50, y_start - 20, f"Utente: {utente}")
+    c.drawString(50, y_start - 40, f"Linac: {linac}")
+    c.drawString(50, y_start - 60, f"Energia: {energia}")
+    c.drawString(50, y_start - 80, f"Data: {datetime.date.today()}")
+
+    c.setFont("Helvetica-Bold", 12)
+    c.drawString(50, y_start - 110, "Risultati Analisi:")
+    c.setFont("Courier", 10)
+    text_obj = c.beginText(50, y_start - 130)
+    for line in risultati.splitlines():
+        if text_obj.getY() < 50:
+            c.drawText(text_obj)
+            c.showPage()
+            text_obj = c.beginText(50, height - 50)
+        text_obj.textLine(line)
+    c.drawText(text_obj)
+
+    # Stampiamo i dati delle ROI, se disponibili
+    results_data = pylinac_obj.results_data()
+    named_segments = getattr(results_data, "named_segment_data", None)
+
+    if named_segments:
+        c.setFont("Helvetica-Bold", 12)
+        y = y_start - 250
+        c.drawString(50, y, "Risultati per ciascuna ROI:")
+        y -= 20
+        c.setFont("Courier", 10)
+
+        for roi_name, segment_obj in named_segments.items():
+            passed = getattr(segment_obj, "passed", "N/A")
+            x_pos = getattr(segment_obj, "x_position_mm", "N/A")
+            r_dev = getattr(segment_obj, "r_dev", "N/A")
+
+            if y < 100:
+                c.showPage()
+                y = height - 50
+                c.setFont("Courier", 10)
+
+            c.drawString(50, y, f"{roi_name}:")
+            y -= 15
+            c.drawString(60, y, f"Passed: {passed}")
+            y -= 15
+            c.drawString(60, y, f"Posizione X (mm): {x_pos}")
+            y -= 15
+            try:
+                r_dev_str = f"{float(r_dev):.3f}%"
+            except Exception:
+                r_dev_str = "N/A"
+            c.drawString(60, y, f"Deviazione R (%): {r_dev_str}")
+            y -= 25
+
+    c.save()
+    buffer.seek(0)
+    return buffer
+
+# TABS
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
+    "Dose Rate Gantry Speed",
+    "Dose Rate Leaf Speed",
+    "Picket Fence",
+    "Star Shot",
+    "CBCT CatPhan",
+    "Wiston Lutz",
+    "Field Analysis",
+    "Wedge Angle"
+])
+
+with tab1:
+    st.header("Dose Rate Gantry Speed (DRGS)")
+
+    open_img = st.file_uploader("Carica immagine Open.dcm", type=["dcm"], key="drgs_open")
+    dmlc_img = st.file_uploader("Carica immagine Field.dcm", type=["dcm"], key="drgs_field")
+
+    tolerance = st.number_input("Tolleranza (%)", min_value=0.1, max_value=5.0, value=1.5, step=0.1)
+
+    if open_img and dmlc_img and st.button("Esegui analisi DRGS"):
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".dcm") as f_open, \
+             tempfile.NamedTemporaryFile(delete=False, suffix=".dcm") as f_field:
+            f_open.write(open_img.getbuffer())
+            f_field.write(dmlc_img.getbuffer())
+            open_path = f_open.name
+            field_path = f_field.name
+
+        try:
+            mydrgs = DRGS(image_paths=(open_path, field_path))
+            mydrgs.analyze(tolerance=tolerance)
+
+            risultati = mydrgs.results()
+            st.text(risultati)
+
+            results_data = mydrgs.results_data()
+            named_segments = results_data.named_segment_data if hasattr(results_data, "named_segment_data") else {}
+
+            if named_segments:
+                st.markdown("### Risultati per ROI:")
+                for roi_name, segment_obj in named_segments.items():
+                    passed = getattr(segment_obj, "passed", None)
+                    x_pos = getattr(segment_obj, "x_position_mm", None)
+                    r_dev = getattr(segment_obj, "r_dev", None)
+
+                    st.markdown(f"**{roi_name}**")
+                    st.write(f"- Passed: {passed}")
+                    st.write(f"- Posizione X [mm]: {x_pos}")
+                    if r_dev is not None:
+                        st.write(f"- Deviazione R [%]: {float(r_dev):.3f}%")
+                    else:
+                        st.write("- Deviazione R: N/A")
+                    st.write("---")
+            else:
+                st.warning("Nessun dato ROI disponibile in results_data().")
+
+            mydrgs.plot_analyzed_image()
+            st.pyplot(plt.gcf())
+            plt.close()
+
+            if utente.strip():
+                pdf_buffer = crea_report_pdf_senza_immagini("Dose Rate Gantry Speed", risultati, mydrgs, utente, linac, energia)
+                st.download_button(
+                    label="📥 Scarica Report DRGS PDF",
+                    data=pdf_buffer,
+                    file_name="QA_Report_DRGS.pdf",
+                    mime="application/pdf"
+                )
+            else:
+                st.info("Inserisci il nome utente per abilitare il download del report PDF.")
+
+        except Exception as e:
+            st.error(f"Errore durante l'analisi DRGS: {e}")
+
+
+
+with tab2:
+    st.header("Dose Rate Leaf Speed (DRMLC)")
+
+    open_img = st.file_uploader("Carica immagine Open Field (DICOM)", type=["dcm"], key="drmlc_open")
+    mlc_img = st.file_uploader("Carica immagine MLC Field (DICOM)", type=["dcm"], key="drmlc_mlc")
+
+    tolerance = st.number_input("Tolleranza (%)", min_value=0.5, max_value=10.0, value=3.0, step=0.5)
+
+    if open_img and mlc_img and st.button("Esegui analisi DRLS"):
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".dcm") as f_open, \
+             tempfile.NamedTemporaryFile(delete=False, suffix=".dcm") as f_mlc:
+            f_open.write(open_img.getbuffer())
+            f_mlc.write(mlc_img.getbuffer())
+
+            open_path = f_open.name
+            mlc_path = f_mlc.name
+
+        try:
+            drmlc = DRMLC((open_path, mlc_path))
+            drmlc.analyze(tolerance=tolerance)
+            risultati = drmlc.results()
+            st.text(risultati)
+
+            # Stampa dettagliata per ogni ROI, simile al tab DRGS
+            results_data = drmlc.results_data()
+            named_segments = getattr(results_data, "named_segment_data", None)
+
+            if named_segments:
+                st.markdown("### Risultati per ROI:")
+                for roi_name, segment_obj in named_segments.items():
+                    passed = getattr(segment_obj, "passed", None)
+                    x_pos = getattr(segment_obj, "x_position_mm", None)
+                    r_dev = getattr(segment_obj, "r_dev", None)
+
+                    st.markdown(f"**{roi_name}**")
+                    st.write(f"- Passed: {passed}")
+                    st.write(f"- Posizione X [mm]: {x_pos}")
+                    if r_dev is not None:
+                        st.write(f"- Deviazione R [%]: {float(r_dev):.3f}%")
+                    else:
+                        st.write("- Deviazione R: N/A")
+                    st.write("---")
+            else:
+                st.warning("Nessun dato ROI disponibile in results_data().")
+
+            drmlc.plot_analyzed_image()
+            st.pyplot(plt.gcf())
+            plt.close()
+
+            if utente.strip():
+                report_pdf = crea_report_pdf_senza_immagini("Dose Rate Leaf Speed", risultati, drmlc, utente, linac, energia)
+                st.download_button(
+                    "📥 Scarica Report DRLS PDF",
+                    data=report_pdf,
+                    file_name="QA_Report_DRLS.pdf",
+                    mime="application/pdf"
+                )
+            else:
+                st.info("Inserisci il nome utente per abilitare il download del report PDF.")
+
+        except Exception as e:
+            st.error(f"Errore durante l'analisi DRLS: {e}")
+
+
+with tab3:
+    from pylinac.picketfence import MLC
+
+    st.header("Picket Fence")
+    pf_img = st.file_uploader("Carica immagine PicketFence.dcm", type=["dcm"])
+
+    # ✅ Aggiunta selezione tipo di MLC
+    mlc_type_label = st.selectbox("Seleziona tipo di MLC", ["Millennium", "HD Millennium"])
+    mlc_type = MLC.MILLENNIUM if mlc_type_label == "Millennium" else MLC.HD_MILLENNIUM
+
+    tolerance = st.number_input("Tolleranza (mm)", min_value=0.01, max_value=1.0, value=0.15, step=0.01)
+    action_tolerance = st.number_input("Action tolerance (mm)", min_value=0.01, max_value=1.0, value=0.03, step=0.01)
+
+    if pf_img and st.button("Esegui analisi Picket Fence"):
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".dcm") as f:
+            f.write(pf_img.getbuffer())
+
+        try:
+            pf = PicketFence(f.name, mlc=mlc_type)
+            pf.analyze(tolerance=tolerance, action_tolerance=action_tolerance)
+            risultati = pf.results()
+
+            st.text(risultati)
+            pf.plot_analyzed_image()
+            st.pyplot(plt.gcf())
+            plt.clf()
+
+            if utente.strip():
+                report_pdf = crea_report_pdf_senza_immagini("Picket Fence", risultati, pf, utente, linac, energia)
+                st.download_button(
+                    "📥 Scarica Report Picket Fence PDF",
+                    data=report_pdf,
+                    file_name="QA_Report_PicketFence.pdf",
+                    mime="application/pdf"
+                )
+            else:
+                st.warning("Inserisci il nome utente per generare il report.")
+        except Exception as e:
+            st.error(f"Errore durante l'analisi Picket Fence: {e}")
+
+with tab4:
+    st.header("Star Shot")
+    star_img = st.file_uploader("Carica immagine Starshot (TIFF)", type=["tif", "tiff"])
+    sid_value = st.number_input("SID (mm)", min_value=100, max_value=2000, value=1000)
+    tolerance = st.number_input("Tolleranza", min_value=0.1, max_value=5.0, value=0.8, step=0.1)
+
+    if star_img and st.button("Esegui analisi Star Shot"):
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".tif") as f:
+            f.write(star_img.getbuffer())
+
+        ss = Starshot(f.name, sid=sid_value)
+        ss.analyze(tolerance=tolerance)
+        risultati = ss.results()
+
+        st.text(risultati)
+        ss.plot_analyzed_image()
+        st.pyplot(plt.gcf())
+        plt.clf()
+
+        if utente:
+            report_pdf = crea_report_pdf_senza_immagini("Star Shot", risultati, ss, utente, linac, energia)
+            st.download_button(
+                "📥 Scarica Report Star Shot PDF",
+                data=report_pdf,
+                file_name="QA_Report_StarShot.pdf",
+                mime="application/pdf"
+            )
         else:
-            img_slice = img
-        roi = img_slice[y1:y2, x1:x2]
-        roi_mean = np.mean(roi)
-        if roi_mean >= threshold:
-            return img_slice, ds
-    return None, None
+            st.warning("Inserisci il nome utente per generare il report.")
 
-# ---------- Caricamento ZIP ----------
-uploaded_zip = st.file_uploader("Carica un file ZIP con tutti i DICOM", type="zip")
+with tab5:
+    st.header("CBCT CatPhan")
 
-if uploaded_zip is not None:
-    images = load_dicom_from_zip(uploaded_zip)
-    st.success(f"{len(images)} DICOM trovati nel ZIP")
-    
-    # Trova la slice corretta con marker
-    img_correct, ds_correct = find_marker_slice(images)
-    if img_correct is None:
-        st.error("Non è stata trovata la slice corretta con il marker bianco!")
-    else:
-        st.success(f"Slice selezionata: {ds_correct.SOPInstanceUID}")
-        show_image(img_correct, title=f"Slice corretta: {ds_correct.SOPInstanceUID}")
+    # Selezione modello CatPhan
+    catphan_model = st.selectbox("Seleziona modello CatPhan", ["CatPhan504", "CatPhan600"])
 
-        # ---------- Analisi CTP401 ----------
-        st.markdown("---")
-        st.header("1️⃣ Sensitometry (Linearity)")
-        roi_coords = st.text_input("Inserisci ROI [x1,y1,x2,y2]", "50,50,100,100")
-        roi_coords = [int(x) for x in roi_coords.split(",")]
-        mean, std, roi = calc_roi_stats(img_correct, roi_coords)
-        st.write(f"Mean={mean:.2f}, Std={std:.2f}")
-        st.image(np.nan_to_num(roi, nan=0.0), caption="ROI", use_column_width=True)
+    uploaded_file = st.file_uploader("Carica un file ZIP contenente immagini DICOM", type="zip")
 
-        st.markdown("---")
-        st.header("2️⃣ Scan Slice Geometry / Slice Sensitivity Profile")
-        line_coords = [50, 100, 200, 100]  # esempio
-        plot_line_profile(img_correct, line_coords)
-        
-        st.markdown("---")
-        st.header("3️⃣ Pixel (Matrix) Size")
-        obj_size_mm = st.number_input("Dimensione reale oggetto (mm)", value=25.0)
-        pixel_count = st.number_input("Numero pixel oggetto", value=50)
-        pixel_size = obj_size_mm / pixel_count
-        st.write(f"Pixel size stimato: {pixel_size:.2f} mm/pixel")
-        
-        st.markdown("---")
-        st.header("4️⃣ Circular Symmetry")
-        edges = detect_edges(img_correct)
-        contours = measure.find_contours(edges, 0.1)
-        st.write(f"{len(contours)} contorni trovati")
-        plt.imshow(edges, cmap="gray")
-        st.pyplot(plt)
+    if uploaded_file and st.button("Esegui analisi CatPhan"):
+        import tempfile
+        import zipfile
+        import os
+        import pydicom
 
-        st.markdown("---")
-        st.header("5️⃣ Phantom Position Verification & 6️⃣ Patient Alignment System Check")
-        st.write("Misurare offset dal centro (da implementare ROI/marker automatici)")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            zip_path = os.path.join(temp_dir, "upload.zip")
+            with open(zip_path, "wb") as f:
+                f.write(uploaded_file.getbuffer())
 
-        st.markdown("---")
-        st.header("7️⃣ Scan Incrementation")
-        slice_positions = [float(ds.SliceLocation) for img, ds in images if hasattr(ds, "SliceLocation")]
-        slice_positions.sort()
-        increments = np.diff(slice_positions)
-        st.write(f"Distanze tra slice: {increments}")
+            try:
+                with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                    zip_ref.extractall(temp_dir)
+            except zipfile.BadZipFile:
+                st.error("Il file caricato non è un archivio ZIP valido.")
+            else:
+                dicom_files = []
+                for root, _, files in os.walk(temp_dir):
+                    for file in files:
+                        if file.lower().endswith('.dcm'):
+                            dicom_files.append(os.path.join(root, file))
 
-else:
-    st.info("Attendere il caricamento del file ZIP")
+                if not dicom_files:
+                    st.error("Nessun file DICOM trovato nello ZIP.")
+                else:
+                    st.success(f"Trovati {len(dicom_files)} file DICOM.")
+
+                    try:
+                        ds = pydicom.dcmread(dicom_files[0])
+                        st.write(f"**Patient Name:** {ds.get('PatientName', 'N/A')}")
+                        st.write(f"**Study Date:** {ds.get('StudyDate', 'N/A')}")
+                        st.write(f"**Modality:** {ds.get('Modality', 'N/A')}")
+
+                        # Analisi CatPhan selezionata
+                        if catphan_model == "CatPhan504":
+                            catphan = CatPhan504(dicom_files)
+                        else:
+                            catphan = CatPhan600(dicom_files)
+
+                        catphan.analyze()
+                        risultati = catphan.results()
+
+                        st.text(risultati)
+                        catphan.plot_analyzed_image()
+                        st.pyplot(plt.gcf())
+                        plt.clf()
+
+                        if utente.strip():
+                            report_pdf = crea_report_pdf_senza_immagini(
+                                f"CBCT {catphan_model}", risultati, catphan, utente, linac, energia
+                            )
+                            st.download_button(
+                                "📥 Scarica Report CBCT PDF",
+                                data=report_pdf,
+                                file_name=f"QA_Report_CBCT_{catphan_model}.pdf",
+                                mime="application/pdf"
+                            )
+                        else:
+                            st.warning("Inserisci il nome utente per generare il report.")
+
+                    except Exception as e:
+                        st.error(f"Errore durante l'analisi CBCT CatPhan: {e}")
+
+with tab6:
+    st.header("Winston Lutz")
+    wl_zip = st.file_uploader("Carica file ZIP contenente immagini per Winston-Lutz", type=["zip"])
+
+    if wl_zip and st.button("Esegui analisi Winston Lutz"):
+        import zipfile
+        import tempfile
+        import os
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            zip_path = os.path.join(temp_dir, "winston_lutz.zip")
+            with open(zip_path, "wb") as f:
+                f.write(wl_zip.getbuffer())
+
+            try:
+                # Estrai i file dallo ZIP nella cartella temporanea
+                with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                    zip_ref.extractall(temp_dir)
+
+                # Filtra solo i file DICOM (.dcm)
+                dicom_files = [os.path.join(temp_dir, f) for f in os.listdir(temp_dir)
+                               if f.lower().endswith('.dcm')]
+
+                if not dicom_files:
+                    st.error("Nessun file DICOM trovato nello ZIP.")
+                else:
+                    # Esegui analisi WinstonLutz con la lista di file DICOM
+                    wl = WinstonLutz(dicom_files)
+                    wl.analyze(bb_size_mm=7)
+                    risultati = wl.results()
+
+                    st.text(risultati)
+                    wl.plot_images()
+                    st.pyplot(plt.gcf())
+                    plt.clf()
+
+                    if utente.strip():
+                        report_pdf = crea_report_pdf_senza_immagini("Winston Lutz", risultati, wl, utente, linac, energia)
+                        st.download_button(
+                            "📥 Scarica Report Winston Lutz PDF",
+                            data=report_pdf,
+                            file_name="QA_Report_WinstonLutz.pdf",
+                            mime="application/pdf"
+                        )
+                    else:
+                        st.warning("Inserisci il nome utente per generare il report.")
+
+            except zipfile.BadZipFile:
+                st.error("Il file caricato non è un file ZIP valido.")
+            except Exception as e:
+                st.error(f"Errore durante l'analisi Winston Lutz: {e}")
+
+
+
+with tab7:
+    import matplotlib.pyplot as plt
+
+    st.header("Field Analysis")
+
+    fa_file = st.file_uploader("Carica immagine FieldAnalysis (DICOM)", type=["dcm"])
+
+    interpolation = st.selectbox("Interpolazione", options=[i.name for i in Interpolation])
+    normalization = st.selectbox("Normalizzazione", options=[n.name for n in Normalization])
+    centering = st.selectbox("Centering method", options=[c.name for c in Centering])
+
+    # Usa il nome utente già inserito all’inizio (non ridichiararlo)
+    # utente è già definito globalmente
+
+    if fa_file and st.button("Esegui analisi Field Analysis"):
+        import tempfile
+        import os
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".dcm") as f:
+            f.write(fa_file.getbuffer())
+            temp_path = f.name
+
+        try:
+            fa = FieldAnalysis(temp_path)
+            fa.interpolation = Interpolation[interpolation]
+            fa.normalization = Normalization[normalization]
+            fa.centering = Centering[centering]
+
+            fa.analyze()
+            risultati = fa.results()
+
+            st.text(risultati)
+            fa.plot_analyzed_image()
+            st.pyplot(plt.gcf())
+            plt.clf()
+
+            if utente.strip():
+                report_pdf = crea_report_pdf_senza_immagini("Field Analysis", risultati, fa, utente, linac, energia)
+                st.download_button(
+                    "📥 Scarica Report Field Analysis PDF",
+                    data=report_pdf,
+                    file_name="QA_Report_FieldAnalysis.pdf",
+                    mime="application/pdf"
+                )
+            else:
+                st.warning("Inserisci il nome utente per generare il report.")
+
+        except Exception as e:
+            st.error(f"Errore durante l'analisi Field Analysis: {e}")
+
+        finally:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+with tab8:
+    st.header("Wedge Angle")
+
+    wedge_img = st.file_uploader("Carica immagine EPID con wedge (DICOM)", type=["dcm"])
+
+    wdistL = st.number_input("Distanza campo (cm, es. 5 per 10x10)", min_value=1.0, max_value=20.0, value=5.0, step=0.1)
+    u = st.number_input("Valore u (costante da misure water tank)", min_value=0.001, max_value=1.0, value=0.036, step=0.001)
+    nominal_angle = st.number_input("Angolo nominale wedge (°)", min_value=0.0, max_value=90.0, value=60.0, step=0.1)
+    tolerance_percent = st.number_input("Tolleranza percentuale (%)", min_value=0.1, max_value=10.0, value=2.0, step=0.1)
+
+    def get_profile(ds):
+        img = ds.pixel_array.astype(float)
+        center_col = img.shape[1] // 2   # colonna centrale per asse y
+        profile = img[:, center_col]     # profilo lungo asse y
+        return profile
+
+    def find_dose_at_distance(profile, pixel_spacing_cm, wdistL):
+        center_pixel = len(profile) // 2
+        half_dist_pix = int((wdistL / 2) / pixel_spacing_cm)
+
+        left_index = max(center_pixel - half_dist_pix, 0)
+        right_index = min(center_pixel + half_dist_pix, len(profile) - 1)
+
+        D1 = profile[left_index]
+        D2 = profile[right_index]
+        return D1, D2, left_index, right_index
+
+    def calculate_theta(D1, D2, u, wdistL):
+        if D1 <= 0 or D2 <= 0:
+            raise ValueError("Dose D1 e D2 devono essere positivi")
+
+        ln_ratio = math.log(D1 / D2)
+        theta_rad = math.atan(ln_ratio / (u * wdistL))
+        theta_deg = math.degrees(theta_rad)
+        return abs(theta_deg)  # valore assoluto
+
+    def plot_profile(profile, left_idx, right_idx):
+        fig, ax = plt.subplots(figsize=(10,5))
+        ax.plot(profile, label='Profilo dose')
+        ax.scatter([left_idx, right_idx], [profile[left_idx], profile[right_idx]], color='red', label='D1 e D2')
+        ax.axvline(x=len(profile)//2, color='gray', linestyle='--', label='Centro')
+        ax.set_title('Profilo dose EPID (asse Y)')
+        ax.set_xlabel('Pixel')
+        ax.set_ylabel('Dose (counts)')
+        ax.legend()
+        ax.grid(True)
+        st.pyplot(fig)
+        plt.close(fig)
+
+    if wedge_img and st.button("Calcola Wedge Angle"):
+        try:
+            ds = pydicom.dcmread(wedge_img)
+            tag = (0x3002, 0x0011)
+
+            if tag in ds:
+                pixel_spacing_mm = [float(x) for x in ds[tag].value]
+                pixel_spacing_cm = pixel_spacing_mm[0] / 10
+            else:
+                pixel_spacing_cm = 0.025  # fallback
+
+            profile = get_profile(ds)
+            D1, D2, left_idx, right_idx = find_dose_at_distance(profile, pixel_spacing_cm, wdistL)
+
+            theta = calculate_theta(D1, D2, u, wdistL)
+            diff_percent = abs(theta - nominal_angle) / nominal_angle * 100
+
+            st.write(f"D1 (dose a -{wdistL/2} cm dal centro): **{D1:.2f}**")
+            st.write(f"D2 (dose a +{wdistL/2} cm dal centro): **{D2:.2f}**")
+            st.write(f"Angolo θ calcolato (valore assoluto): **{theta:.2f}°**")
+            st.write(f"Differenza percentuale dall'angolo nominale: **{diff_percent:.2f}%**")
+
+            if diff_percent <= tolerance_percent:
+                st.success(f"RISULTATO: PASS (differenza entro ±{tolerance_percent}%)")
+            else:
+                st.error(f"RISULTATO: FAIL (differenza fuori tolleranza ±{tolerance_percent}%)")
+
+            plot_profile(profile, left_idx, right_idx)
+
+            # Generazione report PDF
+            if utente.strip():
+                risultati_wedge = (
+                    f"D1 (dose a -{wdistL/2} cm dal centro): {D1:.2f}\n"
+                    f"D2 (dose a +{wdistL/2} cm dal centro): {D2:.2f}\n"
+                    f"Angolo wedge calcolato: {theta:.2f}°\n"
+                    f"Differenza percentuale dall'angolo nominale: {diff_percent:.2f}%\n"
+                    f"Risultato: {'PASS' if diff_percent <= tolerance_percent else 'FAIL'}"
+                )
+                report_pdf = crea_report_pdf_senza_immagini("Wedge Angle", risultati_wedge, None, utente, linac, energia)
+                st.download_button(
+                    "📥 Scarica Report Wedge Angle PDF",
+                    data=report_pdf,
+                    file_name="QA_Report_WedgeAngle.pdf",
+                    mime="application/pdf"
+                )
+            else:
+                st.warning("Inserisci il nome utente per generare il report.")
+
+        except Exception as e:
+            st.error(f"Errore durante il calcolo Wedge Angle: {e}")
+
+
+
+
+
+
+
+
