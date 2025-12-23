@@ -1,9 +1,7 @@
 streamlit
 pydicom
 numpy
-scipy
 matplotlib
-fpdf
+Pillow
 pylinac
-scikit-learn
-opencv-python-headless
+reportlab
