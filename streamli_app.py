@@ -47,8 +47,8 @@ mostra_logo_e_titolo(logo_file_path, "Controlli Qualità LINAC")
 
 # DATI GENERALI
 utente = st.text_input("Nome Utente")
-linac = st.selectbox("Seleziona Linac", ["Linac 4791", "Edge", "Linac 6322", "Linac 1015", "STx", "Trilogy", "TueBeam PIO"])
-energia = st.selectbox("Seleziona Energia", ["6 MV", "10 MV", "15 MV", "6 FFF", "10 FFF"])
+linac = st.selectbox("Seleziona Linac", ["Linac 4791", "Edge", "Linac 6322", "Linac 1015", "STx", "Trilogy", "TueBeam PIO", "CGRT"])
+energia = st.selectbox("Seleziona Energia", ["6 MV", "10 MV", "15 MV", "6 FFF", "10 FFF","Protocollo CBCT Protoni"])
 
 # FUNZIONE PDF
 def crea_report_pdf_senza_immagini(titolo, risultati, pylinac_obj, utente, linac, energia):
